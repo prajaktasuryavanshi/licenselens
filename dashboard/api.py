@@ -1,3 +1,4 @@
+from functools import lru_cache
 import os
 import re
 import shutil
@@ -25,6 +26,7 @@ def classify(lic: str) -> str:
     return "Low"
 
 
+@lru_cache(maxsize=256)
 def pypi_lookup(name: str):
     """Fetch (license, latest_version) for a package from the PyPI JSON API."""
     try:
