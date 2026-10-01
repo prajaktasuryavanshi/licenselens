@@ -1,18 +1,38 @@
 services:
+  db:
+    image: postgres:16
+    env_file: .env
+    volumes:
+      - scan_data:/var/lib/postgresql/data
+      - ./db_init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      retries: 10
+
   api:
     build:
-      context: ./dashboard
-      dockerfile: Dockerfile.api
+      context: .
+      dockerfile: dashboard/Dockerfile.api
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     ports:
       - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
 
   dashboard:
     build:
       context: ./dashboard
       dockerfile: Dockerfile.dashboard
-    ports:
-      - "8501:8501"
     environment:
       - API_URL=http://api:8000
+    ports:
+      - "8501:8501"
     depends_on:
       - api
+
+volumes:
+  scan_data:
