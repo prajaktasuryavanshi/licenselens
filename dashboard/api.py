@@ -1,62 +1,31 @@
-from functools import lru_cache
 import os
-import re
 import shutil
+import sys
 import uuid
 
-import requests
+import psycopg2
 from fastapi import FastAPI, Form, UploadFile
+
+# Person A's scanner module (scanner/ folder) is the scanning engine
+SCANNER_DIR = os.getenv(
+    "SCANNER_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scanner"),
+)
+sys.path.insert(0, SCANNER_DIR)
+from main import run_scan  # noqa: E402
+from db import save_scan  # noqa: E402
 
 app = FastAPI(title="LicenseLens API")
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-COPYLEFT_PROJECTS = ("GPL", "AGPL")
-
-
-def classify(lic: str) -> str:
-    l = lic.upper()
-    if not l or l == "UNKNOWN":
-        return "Unknown"
-    if "LGPL" in l or "MPL" in l or "EPL" in l or "CDDL" in l:
-        return "Medium"
-    if "GPL" in l:
-        return "High"
-    return "Low"
-
-
-@lru_cache(maxsize=256)
-def pypi_lookup(name: str):
-    """Fetch (license, latest_version) for a package from the PyPI JSON API."""
-    try:
-        r = requests.get(f"https://pypi.org/pypi/{name}/json", timeout=8)
-        if r.status_code != 200:
-            return "Unknown", ""
-        info = r.json()["info"]
-        lic = ""
-        for c in info.get("classifiers", []):
-            if c.startswith("License :: OSI Approved ::"):
-                lic = c.split("::")[-1].strip().replace(" License", "").replace("Apache Software", "Apache-2.0")
-                break
-        if not lic:
-            raw = (info.get("license_expression") or info.get("license") or "").strip()
-            lic = raw if 0 < len(raw) <= 200 else "Unknown"
-        return lic, info.get("version", "")
-    except Exception:
-        return "Unknown", ""
-
-
-def parse_requirements(text: str):
-    pkgs = []
-    for line in text.splitlines():
-        line = line.split("#")[0].strip()
-        if not line or line.startswith("-"):
-            continue
-        m = re.match(r"^([A-Za-z0-9_.\-]+)\s*(?:\[.*\])?\s*(?:[=<>!~]=?\s*([^\s;,]+))?", line)
-        if m:
-            pkgs.append((m.group(1), m.group(2) or ""))
-    return pkgs[:40]
+RISK_MAP = {
+    "high": ("High", "Conflict"),
+    "medium": ("Medium", "Review"),
+    "ok": ("Low", "OK"),
+    "unknown": ("Unknown", "Review"),
+}
 
 
 @app.post("/scan")
@@ -66,27 +35,48 @@ async def scan_project(file: UploadFile, project_license: str = Form("MIT")):
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    with open(path, encoding="utf-8", errors="ignore") as f:
-        packages = parse_requirements(f.read())
+    raw = run_scan(path, project_license)
 
-    project_is_copyleft = any(k in project_license.upper() for k in COPYLEFT_PROJECTS)
+    if os.getenv("DATABASE_URL"):
+        try:
+            save_scan(file.filename, project_license, raw)
+        except Exception as e:
+            print("DB save failed:", e)
+
     results = []
-    for name, version in packages:
-        lic, latest = pypi_lookup(name)
-        risk = classify(lic)
-        if risk == "High" and not project_is_copyleft:
-            status = "Conflict"
-        elif risk in ("Medium", "Unknown"):
-            status = "Review"
-        else:
-            status = "OK"
+    for d in raw:
+        risk, status = RISK_MAP.get(str(d["risk"]).lower(), ("Unknown", "Review"))
         results.append(
             {
-                "package": name,
-                "version": version or latest,
-                "license": lic,
+                "package": d["name"],
+                "version": d.get("version") or "",
+                "license": d["license"],
                 "risk": risk,
                 "status": status,
             }
         )
     return {"scan_id": scan_id, "project_license": project_license, "results": results}
+
+
+@app.get("/history")
+def history():
+    if not os.getenv("DATABASE_URL"):
+        return []
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT to_char(s.scanned_at,'DD Mon HH24:MI'), s.project_name, s.target_license, "
+            "COUNT(d.id), COALESCE(SUM(CASE WHEN d.risk='high' THEN 1 ELSE 0 END),0) "
+            "FROM scans s LEFT JOIN dependencies d ON d.scan_id = s.id "
+            "GROUP BY s.id ORDER BY s.id DESC LIMIT 20"
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {"time": r[0], "file": r[1], "project license": r[2], "packages": r[3], "conflicts": int(r[4])}
+            for r in rows
+        ]
+    except Exception:
+        return []

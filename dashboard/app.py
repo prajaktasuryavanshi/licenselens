@@ -154,22 +154,15 @@ with tab_sbom:
         st.info("Run a scan first to generate the SBOM.")
 
 with tab_hist:
-    if st.session_state.history:
-        hist = pd.DataFrame(
-            [
-                {
-                    "time": h["time"],
-                    "file": h["file"],
-                    "project license": h["project_license"],
-                    "packages": len(h["results"]),
-                    "conflicts": sum(r["status"] == "Conflict" for r in h["results"]),
-                }
-                for h in st.session_state.history
-            ]
-        )
-        st.dataframe(hist, use_container_width=True, hide_index=True)
+    st.subheader("Saved scan history (database)")
+    try:
+        hist = requests.get(f"{API_URL}/history", timeout=5).json()
+    except Exception:
+        hist = []
+    if hist:
+        st.dataframe(pd.DataFrame(hist), use_container_width=True, hide_index=True)
     else:
-        st.info("No scans yet. (Database-backed history is the next milestone.)")
+        st.info("No saved scans yet. Run a scan and it will appear here.")
 
 with tab_arch:
     st.subheader("Containerised architecture")
