@@ -39,7 +39,7 @@ def pypi_lookup(name: str):
                 break
         if not lic:
             raw = (info.get("license_expression") or info.get("license") or "").strip()
-            lic = raw if 0 < len(raw) <= 40 else "Unknown"
+            lic = raw if 0 < len(raw) <= 200 else "Unknown"
         return lic, info.get("version", "")
     except Exception:
         return "Unknown", ""
