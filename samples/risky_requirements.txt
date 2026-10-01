@@ -1,0 +1,8 @@
+flask==2.0.1
+requests==2.31.0
+numpy
+pandas
+django
+pylint
+PyQt5
+mysqlclient
