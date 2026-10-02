@@ -3,3 +3,6 @@ uvicorn
 streamlit
 requests
 python-multipart
+psycopg2-binary
+pandas
+pytest
